@@ -36,6 +36,8 @@ scrape_interval_seconds = 15
 # enabled = true
 # eval_interval_seconds = 30
 # webhook_url = "https://hooks.slack.com/services/..."   # or env WAF_CP_ALERT_WEBHOOK
+# webhook_format = "generic"   # "generic" (raw Alert JSON) | "slack" ({"text": "…"}, also Mattermost)
+# dashboard_url = "https://cp.example"   # optional; appended to Slack text when set
 
 # One alert rule: >= 20 blocks from a single client IP within 60s (per-IP burst = attack signature).
 # [[controlplane.alerts]]
@@ -53,89 +55,48 @@ scrape_interval_seconds = 15
 # principal); the user-management + audit endpoints are mounted. Requires two env secrets:
 #   WAF_CP_AUDIT_KEY                = 64 hex chars (Ed25519 seed); MUST persist across restarts so the
 #                                    audit chain stays verifiable under a stable public key.
-#   WAF_CP_BOOTSTRAP_ADMIN_PASSWORD = initial password for `bootstrap_admin` (used once, if no users).
+#   WAF_CP_BOOTSTRAP_ADMIN_PASSWORD = initial password for the seeded admin (used once, if no users).
 # [controlplane.governance]
 # enabled = true
-# session_ttl_hours = 12
-# cookie_secure = true        # set false only for local http dev
-# bootstrap_admin = "admin"   # created if there are zero users at boot
-# Login brute-force throttle (v2): N failed logins for a username within the window → lock out.
-# login_max_failures = 5
-# login_window_seconds = 60
-# login_lockout_seconds = 300
+# session_ttl_seconds = 28800
+# bootstrap_admin_username = "admin"
 
-# SSO via OpenID Connect (v2). The IdP is discovered from issuer_url; login goes through the browser
-# (GET /api/auth/oidc/login → IdP → /api/auth/oidc/callback → session cookie). The client secret comes
-# from WAF_CP_OIDC_CLIENT_SECRET. A role is mapped from the `role_claim` (e.g. IdP groups); a user that
-# matches no mapping is denied unless `default_role` is set.
+# OIDC SSO (§8 v2). When present, /api/auth/oidc/start + /api/auth/oidc/callback are mounted and a
+# successful IdP login provisions a local user + session. Prefer WAF_CP_OIDC_CLIENT_SECRET over the
+# file for the secret. role_map maps an IdP claim value (e.g. a group name) to a local role; the
+# highest-privilege match wins; default_role is the fallback (omit to deny unmapped users).
 # [controlplane.governance.oidc]
-# issuer_url = "https://idp.example.com/realms/waf"
-# client_id = "waf-cp"
-# redirect_url = "https://cp.example.com/api/auth/oidc/callback"
+# issuer_url = "https://idp.example"
+# client_id = "waf-controlplane"
+# redirect_url = "https://cp.example/api/auth/oidc/callback"
 # role_claim = "groups"
-# default_role = "viewer"     # optional; omit to DENY users that match no role_map entry
 # [[controlplane.governance.oidc.role_map]]
 # claim = "waf-admins"
 # role = "admin"
+# [[controlplane.governance.oidc.role_map]]
+# claim = "waf-operators"
+# role = "operator"
 
-# SIEM export (§9). A background forwarder PUSHes stored events (denied verdicts + signed audit + alerts)
-# to SIEM sinks as versioned, ECS-like NDJSON. At-least-once (a per-(destination,stream) cursor advances
-# only on a whole-batch 2xx ack); the lag is exposed via GET /api/siem/status. Default OFF. The auth
-# header is best supplied via env WAF_CP_SIEM_AUTH_<NAME> (name upper-cased, non-alnum → _).
+# SIEM export (§9). The forwarder polls new stored events and PUSHes batches (NDJSON) to each
+# destination. Default OFF. Prefer WAF_CP_SIEM_AUTH_<NAME> (name upper-cased, non-alnum → _) over the
+# file for the auth header.
 # [controlplane.siem]
 # enabled = true
-# flush_interval_seconds = 10       # temporal batching, not event-per-event
+# flush_interval_seconds = 10
 # batch_size = 500
 # [[controlplane.siem.destinations]]
-# name = "splunk"
-# endpoint = "https://splunk:8088/services/collector/event"
-# auth_header = "Splunk <hec-token>"      # or env WAF_CP_SIEM_AUTH_SPLUNK; Elastic: "ApiKey <key>"
-# format = "ecs"                          # v1: ecs (NDJSON). cef/leef/syslog = follow-on
+# name = "elastic"
+# endpoint = "https://es.example/_bulk"
+# format = "ecs"
 # streams = ["decisions", "audit", "alerts"]
 
+# API attack-surface inventory (§4-B pt3 discovery). Optional OpenAPI JSON spec to classify observed
+# endpoints as documented vs shadow. Unset ⇒ inventory lists observed endpoints unclassified.
+# [controlplane.api_inventory]
+# spec_path = "/etc/waf/openapi.json"
 
-
-
-#[controlplane]
-#listen = "127.0.0.1:9613"
-#retention_days = 30
-#scrape_interval_seconds = 3600
-#ui_dir = "crates/waf-controlplane/ui/dist"
-#
-#[[controlplane.alerts]]
-#name = "sqli-burst-per-ip"
-#decision = "blocked"
-#rule_id = "sqli-union-select"
-#group_by = "client_ip"
-#window_seconds = 60
-#threshold = 20
-#severity = "critical"
-#cooldown_seconds = 300
-#
-#[[controlplane.alerts]]
-#name = "any-block-spike"
-#group_by = "none"
-#window_seconds = 300
-#threshold = 500
-#severity = "warning"
-
-
-#[controlplane]
-#listen = "127.0.0.1:9622"
-#retention_days = 30
-#scrape_interval_seconds = 3600
-#
-#[controlplane.governance]
-#enabled = true
-#cookie_secure = false
-#bootstrap_admin = "admin"
-#
-#[controlplane.governance.oidc]
-#issuer_url = "http://localhost:8080/realms/waf"
-#client_id = "waf-cp"
-#redirect_url = "http://localhost:9622/api/auth/oidc/callback"
-#role_claim = "groups"
-#
-#[[controlplane.governance.oidc.role_map]]
-#claim = "waf-admins"
-#role = "admin"
+# Request-capture storage. Retention of the full denied requests shipped by nodes (independent of and
+# typically shorter than retention_days; captures hold raw request material). 0 = keep forever.
+# Default 168 hours (7 days).
+# [controlplane.captures]
+# retention_hours = 168
